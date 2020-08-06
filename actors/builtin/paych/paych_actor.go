@@ -15,11 +15,6 @@ import (
 	adt "github.com/filecoin-project/specs-actors/actors/util/adt"
 )
 
-// Maximum number of lanes in a channel.
-const LaneLimit = 256
-
-const SettleDelay = builtin.EpochsInHour * 12
-
 type Actor struct{}
 
 func (a Actor) Exports() []interface{} {
@@ -144,6 +139,10 @@ func (pca Actor) UpdateChannelState(rt vmr.Runtime, params *UpdateChannelStatePa
 
 	if sv.Signature == nil {
 		rt.Abortf(exitcode.ErrIllegalArgument, "voucher has no signature")
+	}
+
+	if len(params.Secret) > MaxSecretSize {
+		rt.Abortf(exitcode.ErrIllegalArgument, "secret must be at most 256 bytes long")
 	}
 
 	vb, err := sv.SigningBytes()

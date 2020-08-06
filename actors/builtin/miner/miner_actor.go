@@ -86,6 +86,8 @@ type ConstructorParams = power.MinerConstructorParams
 func (a Actor) Constructor(rt Runtime, params *ConstructorParams) *adt.EmptyValue {
 	rt.ValidateImmediateCallerIs(builtin.InitActorAddr)
 
+	checkPeerInfo(rt, params.PeerId, params.Multiaddrs)
+
 	_, ok := SupportedProofTypes[params.SealProofType]
 	if !ok {
 		rt.Abortf(exitcode.ErrIllegalArgument, "proof type %d not allowed for new miner actors", params.SealProofType)
@@ -192,8 +194,8 @@ type ChangePeerIDParams struct {
 }
 
 func (a Actor) ChangePeerID(rt Runtime, params *ChangePeerIDParams) *adt.EmptyValue {
-	// TODO: Consider limiting the maximum number of bytes used by the peer ID on-chain.
-	// https://github.com/filecoin-project/specs-actors/issues/712
+	checkPeerInfo(rt, params.NewID, nil)
+
 	var st State
 	rt.State().Transaction(&st, func() {
 		info := getMinerInfo(rt, &st)
@@ -211,8 +213,8 @@ type ChangeMultiaddrsParams struct {
 }
 
 func (a Actor) ChangeMultiaddrs(rt Runtime, params *ChangeMultiaddrsParams) *adt.EmptyValue {
-	// TODO: Consider limiting the maximum number of bytes used by multiaddrs on-chain.
-	// https://github.com/filecoin-project/specs-actors/issues/712
+	checkPeerInfo(rt, nil, params.NewMultiaddrs)
+
 	var st State
 	rt.State().Transaction(&st, func() {
 		info := getMinerInfo(rt, &st)
@@ -269,7 +271,6 @@ func (a Actor) SubmitWindowedPoSt(rt Runtime, params *SubmitWindowedPoStParams) 
 	if !bytes.Equal(commRand, params.ChainCommitRand) {
 		rt.Abortf(exitcode.ErrIllegalArgument, "post commit randomness mismatched")
 	}
-	// TODO: limit the length of proofs array https://github.com/filecoin-project/specs-actors/issues/416
 
 	// Get the total power/reward. We need these to compute penalties.
 	rewardStats := requestCurrentEpochBlockReward(rt)
@@ -284,17 +285,26 @@ func (a Actor) SubmitWindowedPoSt(rt Runtime, params *SubmitWindowedPoStParams) 
 		info = getMinerInfo(rt, &st)
 		rt.ValidateImmediateCallerIs(info.Worker)
 
+		// Verify that the miner has passed 0 or 1 proofs. If they've
+		// passed 1, verify that it's a good proof.
+		//
+		// This can be 0 if the miner isn't actually proving anything,
+		// just skipping all sectors.
+		windowPoStProofType, err := info.SealProofType.RegisteredWindowPoStProof()
+		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to determine window PoSt type")
+		if len(params.Proofs) > 1 {
+			rt.Abortf(exitcode.ErrIllegalArgument, "expected at most one proof, got %d", len(params.Proofs))
+		} else if len(params.Proofs) == 1 && params.Proofs[0].PoStProof != windowPoStProofType {
+			rt.Abortf(exitcode.ErrIllegalArgument, "expected proof of type %s, got proof of type %s", params.Proofs[0], windowPoStProofType)
+		}
+
 		// Validate that the miner didn't try to prove too many partitions at once.
 		submissionPartitionLimit := loadPartitionsSectorsMax(info.WindowPoStPartitionSectors)
 		if uint64(len(params.Partitions)) > submissionPartitionLimit {
 			rt.Abortf(exitcode.ErrIllegalArgument, "too many partitions %d, limit %d", len(params.Partitions), submissionPartitionLimit)
 		}
 
-		// Load and check deadline.
 		currDeadline := st.DeadlineInfo(currEpoch)
-		deadlines, err := st.LoadDeadlines(adt.AsStore(rt))
-		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load deadlines")
-
 		// Check that the miner state indicates that the current proving deadline has started.
 		// This should only fail if the cron actor wasn't invoked, and matters only in case that it hasn't been
 		// invoked for a whole proving period, and hence the missed PoSt submissions from the prior occurrence
@@ -311,6 +321,9 @@ func (a Actor) SubmitWindowedPoSt(rt Runtime, params *SubmitWindowedPoStParams) 
 
 		sectors, err := LoadSectors(store, st.Sectors)
 		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load sectors")
+
+		deadlines, err := st.LoadDeadlines(adt.AsStore(rt))
+		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load deadlines")
 
 		deadline, err := deadlines.LoadDeadline(store, params.Deadline)
 		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load deadline %d", params.Deadline)
@@ -338,6 +351,10 @@ func (a Actor) SubmitWindowedPoSt(rt Runtime, params *SubmitWindowedPoStParams) 
 		// Skip verification if all sectors are faults.
 		// We still need to allow this call to succeed so the miner can declare a whole partition as skipped.
 		if len(sectorInfos) > 0 {
+			if len(params.Proofs) == 0 {
+				// The miner _was_ supposed to prove something, but didn't.
+				rt.Abortf(exitcode.ErrIllegalArgument, "no proofs submitted in window PoSt")
+			}
 			// Verify the proof.
 			// A failed verification doesn't immediately cause a penalty; the miner can try again.
 			//
@@ -422,9 +439,8 @@ func (a Actor) PreCommitSector(rt Runtime, params *SectorPreCommitInfo) *adt.Emp
 		rt.Abortf(exitcode.ErrIllegalArgument, "seal challenge epoch %v too old, must be after %v", params.SealRandEpoch, challengeEarliest)
 	}
 
-	if params.Expiration <= rt.CurrEpoch() {
-		rt.Abortf(exitcode.ErrIllegalArgument, "sector expiration %v must be after now (%v)", params.Expiration, rt.CurrEpoch())
-	}
+	validateExpiration(rt, rt.CurrEpoch(), params.Expiration, params.SealProof)
+
 	if params.ReplaceCapacity && len(params.DealIDs) == 0 {
 		rt.Abortf(exitcode.ErrIllegalArgument, "cannot replace sector without committing deals")
 	}
@@ -474,10 +490,11 @@ func (a Actor) PreCommitSector(rt Runtime, params *SectorPreCommitInfo) *adt.Emp
 			rt.Abortf(exitcode.ErrIllegalState, "sector %v already committed", params.SectorNumber)
 		}
 
-		validateExpiration(rt, rt.CurrEpoch(), params.Expiration, params.SealProof)
-
 		depositMinimum := big.Zero()
 		if params.ReplaceCapacity {
+			// NOTE: we don't validate that the replacement sector
+			// lives at the target deadline/partition. If it
+			// doesn't, sealing may still succeed but replacement will fail.
 			replaceSector := validateReplaceSector(rt, &st, store, params)
 			// Note the replaced sector's initial pledge as a lower bound for the new sector's deposit
 			depositMinimum = replaceSector.InitialPledge
@@ -530,7 +547,7 @@ func (a Actor) PreCommitSector(rt Runtime, params *SectorPreCommitInfo) *adt.Emp
 
 type ProveCommitSectorParams struct {
 	SectorNumber abi.SectorNumber
-	Proof        []byte
+	Proof        []byte // PARCHECK: arbitrary size
 }
 
 // Checks state of the corresponding sector pre-commitment, then schedules the proof to be verified in bulk
@@ -538,6 +555,10 @@ type ProveCommitSectorParams struct {
 // If valid, the power actor will call ConfirmSectorProofsValid at the end of the same epoch as this message.
 func (a Actor) ProveCommitSector(rt Runtime, params *ProveCommitSectorParams) *adt.EmptyValue {
 	rt.ValidateImmediateCallerAcceptAny()
+
+	if params.SectorNumber > abi.MaxSectorNumber {
+		rt.Abortf(exitcode.ErrIllegalArgument, "sector number greater than maximum")
+	}
 
 	store := adt.AsStore(rt)
 	var st State
@@ -588,6 +609,12 @@ func (a Actor) ProveCommitSector(rt Runtime, params *ProveCommitSectorParams) *a
 
 func (a Actor) ConfirmSectorProofsValid(rt Runtime, params *builtin.ConfirmSectorProofsParams) *adt.EmptyValue {
 	rt.ValidateImmediateCallerIs(builtin.StoragePowerActorAddr)
+
+	if len(params.Sectors) > power.MaxMinerProveCommitsPerEpoch {
+		rt.Log(vmr.WARN, "confirmed more prove commits in an epoch than permitted: %d > %d",
+			len(params.Sectors), power.MaxMinerProveCommitsPerEpoch,
+		)
+	}
 
 	// get network stats from other actors
 	rewardStats := requestCurrentEpochBlockReward(rt)
@@ -743,6 +770,10 @@ type CheckSectorProvenParams struct {
 func (a Actor) CheckSectorProven(rt Runtime, params *CheckSectorProvenParams) *adt.EmptyValue {
 	rt.ValidateImmediateCallerAcceptAny()
 
+	if params.SectorNumber > abi.MaxSectorNumber {
+		rt.Abortf(exitcode.ErrIllegalArgument, "sector number out of range")
+	}
+
 	var st State
 	rt.State().Readonly(&st)
 	store := adt.AsStore(rt)
@@ -803,6 +834,8 @@ func (a Actor) ExtendSectorExpiration(rt Runtime, params *ExtendSectorExpiration
 		)
 	}
 
+	currEpoch := rt.CurrEpoch()
+
 	powerDelta := NewPowerPairZero()
 	pledgeDelta := big.Zero()
 	store := adt.AsStore(rt)
@@ -850,12 +883,21 @@ func (a Actor) ExtendSectorExpiration(rt Runtime, params *ExtendSectorExpiration
 				}
 
 				oldSectors, err := sectors.Load(decl.Sectors)
-				builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load sectors")
+				builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load sectors in partition %v", key)
 				newSectors := make([]*SectorOnChainInfo, len(oldSectors))
 				for i, sector := range oldSectors {
+					// This can happen if the sector should have already expired, but hasn't
+					// because the end of its deadline hasn't passed yet.
+					if sector.Expiration <= currEpoch {
+						rt.Abortf(exitcode.ErrIllegalArgument, "cannot extend expiration for expired sector %v: %d <= %d",
+							sector.SectorNumber,
+							sector.Expiration,
+							currEpoch,
+						)
+					}
 					if decl.NewExpiration < sector.Expiration {
-						rt.Abortf(exitcode.ErrIllegalArgument, "cannot reduce sector expiration to %d from %d",
-							decl.NewExpiration, sector.Expiration)
+						rt.Abortf(exitcode.ErrIllegalArgument, "cannot reduce sector %v's expiration to %d from %d",
+							sector.SectorNumber, decl.NewExpiration, sector.Expiration)
 					}
 					validateExpiration(rt, sector.Activation, decl.NewExpiration, sector.SealProof)
 
@@ -1664,6 +1706,10 @@ func handleProvingDeadline(rt Runtime) {
 
 // Check expiry is exactly *the epoch before* the start of a proving period.
 func validateExpiration(rt Runtime, activation, expiration abi.ChainEpoch, sealProof abi.RegisteredSealProof) {
+	// Expiration must be after activation. Check this explicitly to avoid an underflow below.
+	if expiration <= activation {
+		rt.Abortf(exitcode.ErrIllegalArgument, "sector expiration %v must be after activation (%v)", expiration, activation)
+	}
 	// expiration cannot be less than minimum after activation
 	if expiration-activation < MinSectorExpiration {
 		rt.Abortf(exitcode.ErrIllegalArgument, "invalid expiration %d, total sector lifetime (%d) must exceed %d after activation %d",
@@ -2164,4 +2210,21 @@ func minEpoch(a, b abi.ChainEpoch) abi.ChainEpoch {
 		return a
 	}
 	return b
+}
+
+func checkPeerInfo(rt Runtime, peerID abi.PeerID, multiaddrs []abi.Multiaddrs) {
+	if len(peerID) > MaxPeerIDLength {
+		rt.Abortf(exitcode.ErrIllegalArgument, "peer ID size of %d exceeds maximum size of %d", peerID, MaxPeerIDLength)
+	}
+
+	totalSize := 0
+	for _, ma := range multiaddrs {
+		if len(ma) == 0 {
+			rt.Abortf(exitcode.ErrIllegalArgument, "invalid empty multiaddr")
+		}
+		totalSize += len(ma)
+	}
+	if totalSize > MaxMultiaddrData {
+		rt.Abortf(exitcode.ErrIllegalArgument, "multiaddr size of %d exceeds maximum of %d", totalSize, MaxMultiaddrData)
+	}
 }

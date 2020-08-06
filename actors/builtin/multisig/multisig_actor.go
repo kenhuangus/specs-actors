@@ -402,8 +402,8 @@ func (a Actor) approveTransaction(rt vmr.Runtime, txnID TxnID, txn *Transaction)
 
 		// update approved on the transaction
 		txn.Approved = append(txn.Approved, rt.Message().Caller())
-		 err = ptx.Put(txnID, txn)
-		 builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to put transaction %v for approval", txnID)
+		err = ptx.Put(txnID, txn)
+		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to put transaction %v for approval", txnID)
 
 		st.PendingTxns, err = ptx.Root()
 		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to flush pending transactions")

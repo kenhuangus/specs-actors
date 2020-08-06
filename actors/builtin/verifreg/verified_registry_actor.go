@@ -117,6 +117,7 @@ func (a Actor) AddVerifiedClient(rt vmr.Runtime, params *AddVerifiedClientParams
 	if params.Allowance.LessThan(MinVerifiedDealSize) {
 		rt.Abortf(exitcode.ErrIllegalArgument, "allowance %d below MinVerifiedDealSize for add verified client %v", params.Allowance, params.Address)
 	}
+	// The caller will be verified by checking the verifiers table below.
 	rt.ValidateImmediateCallerAcceptAny()
 
 	var st State
@@ -218,6 +219,7 @@ func (a Actor) UseBytes(rt vmr.Runtime, params *UseBytesParams) *adt.EmptyValue 
 		if newVcCap.LessThan(MinVerifiedDealSize) {
 			// Delete entry if remaining DataCap is less than MinVerifiedDealSize.
 			// Will be restored later if the deal did not get activated with a ProvenSector.
+			// XXX: This isn't quite true. The client can lose up to MinVerifiedDealSize.
 			err = verifiedClients.Delete(AddrKey(params.Address))
 			builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to delete verified client %v", params.Address)
 		} else {
@@ -262,6 +264,7 @@ func (a Actor) RestoreBytes(rt vmr.Runtime, params *RestoreBytesParams) *adt.Emp
 		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load verifiers")
 
 		// validate we are NOT attempting to do this for a verifier
+		// XXX: This seems expensive and pointless?
 		found, err := verifiers.Get(AddrKey(params.Address), nil)
 		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed tp get verifier")
 		if found {

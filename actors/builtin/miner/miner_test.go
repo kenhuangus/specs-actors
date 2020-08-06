@@ -45,8 +45,8 @@ func init() {
 	testPid = abi.PeerID("peerID")
 
 	testMultiaddrs = []abi.Multiaddrs{
-		{1},
-		{2},
+		[]byte("foobar"),
+		[]byte("imafilminer"),
 	}
 
 	// permit 2KiB sectors in tests
@@ -124,6 +124,140 @@ func TestConstruction(t *testing.T) {
 		}
 
 		assertEmptyBitfield(t, st.EarlyTerminations)
+	})
+
+	t.Run("test construct with invalid peer ID", func(t *testing.T) {
+		rt := builder.Build(t)
+		pid := [miner.MaxPeerIDLength + 1]byte{1, 2, 3, 4}
+		params := miner.ConstructorParams{
+			OwnerAddr:     owner,
+			WorkerAddr:    worker,
+			SealProofType: abi.RegisteredSealProof_StackedDrg32GiBV1,
+			PeerId:        abi.PeerID(pid[:]),
+			Multiaddrs:    testMultiaddrs,
+		}
+
+		rt.ExpectValidateCallerAddr(builtin.InitActorAddr)
+
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "peer ID size", func() {
+			rt.Call(actor.Constructor, &params)
+		})
+	})
+
+	t.Run("test construct with large multiaddr", func(t *testing.T) {
+		rt := builder.Build(t)
+		maddrs := make([]abi.Multiaddrs, 100)
+		for i := range maddrs {
+			maddrs[i] = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+		}
+		params := miner.ConstructorParams{
+			OwnerAddr:     owner,
+			WorkerAddr:    worker,
+			SealProofType: abi.RegisteredSealProof_StackedDrg32GiBV1,
+			PeerId:        testPid,
+			Multiaddrs:    maddrs,
+		}
+
+		rt.ExpectValidateCallerAddr(builtin.InitActorAddr)
+
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "multiaddr size", func() {
+			rt.Call(actor.Constructor, &params)
+		})
+	})
+
+	t.Run("test construct with empty multiaddr", func(t *testing.T) {
+		rt := builder.Build(t)
+		maddrs := []abi.Multiaddrs{
+			[]byte{},
+			[]byte{1},
+		}
+		params := miner.ConstructorParams{
+			OwnerAddr:     owner,
+			WorkerAddr:    worker,
+			SealProofType: abi.RegisteredSealProof_StackedDrg32GiBV1,
+			PeerId:        testPid,
+			Multiaddrs:    maddrs,
+		}
+
+		rt.ExpectValidateCallerAddr(builtin.InitActorAddr)
+
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "invalid empty multiaddr", func() {
+			rt.Call(actor.Constructor, &params)
+		})
+	})
+}
+
+// Test operations related to peer info (peer ID/multiaddrs)
+func TestPeerInfo(t *testing.T) {
+	h := newHarness(t, 0)
+	builder := builderForHarness(h)
+
+	t.Run("can set peer id", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		h.setPeerID(rt, abi.PeerID("new peer id"))
+	})
+
+	t.Run("can clear peer id", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		h.setPeerID(rt, nil)
+	})
+
+	t.Run("can't set large peer id", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		largePid := [miner.MaxPeerIDLength + 1]byte{1, 2, 3}
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "peer ID size", func() {
+			h.setPeerID(rt, largePid[:])
+		})
+	})
+
+	t.Run("can set multiaddrs", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		h.setMultiaddrs(rt, abi.Multiaddrs("imanewminer"))
+	})
+
+	t.Run("can set multiple multiaddrs", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		h.setMultiaddrs(rt, abi.Multiaddrs("imanewminer"), abi.Multiaddrs("ihavemany"))
+	})
+
+	t.Run("can set clear the multiaddr", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		h.setMultiaddrs(rt)
+	})
+
+	t.Run("can't set empty multiaddrs", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "invalid empty multiaddr", func() {
+			h.setMultiaddrs(rt, nil)
+		})
+	})
+
+	t.Run("can't set large multiaddrs", func(t *testing.T) {
+		rt := builder.Build(t)
+		h.constructAndVerify(rt)
+
+		maddrs := make([]abi.Multiaddrs, 100)
+		for i := range maddrs {
+			maddrs[i] = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+		}
+
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "multiaddr size", func() {
+			h.setMultiaddrs(rt, maddrs...)
+		})
 	})
 }
 
@@ -1343,7 +1477,7 @@ func TestExtendSectorExpiration(t *testing.T) {
 			}},
 		}
 
-		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "cannot reduce sector expiration", func() {
+		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, fmt.Sprintf("cannot reduce sector %d's expiration", sector.SectorNumber), func() {
 			actor.extendSectors(rt, params)
 		})
 	})
@@ -1353,7 +1487,7 @@ func TestExtendSectorExpiration(t *testing.T) {
 		sector := commitSector(t, rt)
 
 		// extend by even proving period after max
-		rt.SetEpoch(sector.Expiration)
+		rt.SetEpoch(sector.Expiration - 1)
 		extension := miner.WPoStProvingPeriod * (miner.MaxSectorExpirationExtension/miner.WPoStProvingPeriod + 1)
 		newExpiration := rt.Epoch() + extension
 
@@ -1380,7 +1514,7 @@ func TestExtendSectorExpiration(t *testing.T) {
 	t.Run("rejects extension past max for seal proof", func(t *testing.T) {
 		rt := builder.Build(t)
 		sector := commitSector(t, rt)
-		rt.SetEpoch(sector.Expiration)
+		rt.SetEpoch(sector.Expiration - 1)
 
 		maxLifetime := sector.SealProof.SectorMaximumLifetime()
 
@@ -1389,7 +1523,7 @@ func TestExtendSectorExpiration(t *testing.T) {
 		require.NoError(t, err)
 
 		// extend sector until just below threshold
-		rt.SetEpoch(sector.Expiration)
+		rt.SetEpoch(sector.Expiration - 1)
 		extension := abi.ChainEpoch(miner.MinSectorExpiration)
 		expiration := sector.Expiration + extension
 		for ; expiration-sector.Activation < maxLifetime; expiration += extension {
@@ -1404,7 +1538,7 @@ func TestExtendSectorExpiration(t *testing.T) {
 
 			actor.extendSectors(rt, params)
 			sector.Expiration = expiration
-			rt.SetEpoch(expiration)
+			rt.SetEpoch(expiration - 1)
 		}
 
 		// next extension fails because it extends sector past max lifetime
@@ -2906,6 +3040,42 @@ func (h *actorHarness) makePreCommit(sectorNo abi.SectorNumber, challenge, expir
 		DealIDs:       dealIDs,
 		Expiration:    expiration,
 	}
+}
+
+func (h *actorHarness) setPeerID(rt *mock.Runtime, newID abi.PeerID) {
+	params := miner.ChangePeerIDParams{NewID: newID}
+
+	rt.SetCaller(h.worker, builtin.AccountActorCodeID)
+	rt.ExpectValidateCallerAddr(h.worker)
+
+	ret := rt.Call(h.a.ChangePeerID, &params)
+	assert.Nil(h.t, ret)
+	rt.Verify()
+
+	var st miner.State
+	rt.GetState(&st)
+	info, err := st.GetInfo(adt.AsStore(rt))
+	require.NoError(h.t, err)
+
+	assert.Equal(h.t, newID, info.PeerId)
+}
+
+func (h *actorHarness) setMultiaddrs(rt *mock.Runtime, newMultiaddrs ...abi.Multiaddrs) {
+	params := miner.ChangeMultiaddrsParams{NewMultiaddrs: newMultiaddrs}
+
+	rt.SetCaller(h.worker, builtin.AccountActorCodeID)
+	rt.ExpectValidateCallerAddr(h.worker)
+
+	ret := rt.Call(h.a.ChangeMultiaddrs, &params)
+	assert.Nil(h.t, ret)
+	rt.Verify()
+
+	var st miner.State
+	rt.GetState(&st)
+	info, err := st.GetInfo(adt.AsStore(rt))
+	require.NoError(h.t, err)
+
+	assert.Equal(h.t, newMultiaddrs, info.Multiaddrs)
 }
 
 //
