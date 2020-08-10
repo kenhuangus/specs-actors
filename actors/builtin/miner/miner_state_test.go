@@ -648,7 +648,8 @@ func TestSectorAssignment(t *testing.T) {
 
 		newPower, err := harness.s.AssignSectorsToDeadlines(harness.store, 0, sectorInfos, partitionSectors, sectorSize)
 		require.NoError(t, err)
-		require.True(t, newPower.Equals(miner.PowerForSectors(sectorSize, sectorInfos)))
+		require.True(t, newPower.IsZero())
+		//require.True(t, newPower.Equals(miner.PowerForSectors(sectorSize, sectorInfos)))
 
 		dls, err := harness.s.LoadDeadlines(harness.store)
 		require.NoError(t, err)
@@ -667,7 +668,13 @@ func TestSectorAssignment(t *testing.T) {
 				bf := seq(t, start, partitionSectors)
 				partitions = append(partitions, bf)
 			}
+			allSectorBf, err := bitfield.MultiMerge(partitions...)
+			require.NoError(t, err)
+			allSectorNos, err := allSectorBf.All(uint64(noSectors))
+			require.NoError(t, err)
+
 			dlState.withQuantSpec(quantSpec).
+				withUnproven(allSectorNos...).
 				withPartitions(partitions...).
 				assert(t, harness.store, dl)
 

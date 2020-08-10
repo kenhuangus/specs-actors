@@ -355,7 +355,7 @@ func TestCommitments(t *testing.T) {
 		})
 		rt.Reset()
 
-		// Seal randomness challenge too far in past 
+		// Seal randomness challenge too far in past
 		tooOldChallengeEpoch := precommitEpoch - miner.ChainFinality - miner.MaxSealDuration[actor.sealProofType] - 1
 		rt.ExpectAbortContainsMessage(exitcode.ErrIllegalArgument, "too old", func() {
 			actor.preCommitSector(rt, actor.makePreCommit(102, tooOldChallengeEpoch, expiration, nil))
@@ -2466,13 +2466,13 @@ func (h *actorHarness) confirmSectorProofsValid(rt *mock.Runtime, conf proveComm
 			}
 		}
 
-		if !expectRawPower.IsZero() || !expectQAPower.IsZero() {
-			pcParams := power.UpdateClaimedPowerParams{
-				RawByteDelta:         expectRawPower,
-				QualityAdjustedDelta: expectQAPower,
-			}
-			rt.ExpectSend(builtin.StoragePowerActorAddr, builtin.MethodsPower.UpdateClaimedPower, &pcParams, big.Zero(), nil, exitcode.Ok)
-		}
+		//if !expectRawPower.IsZero() || !expectQAPower.IsZero() {
+		//	pcParams := power.UpdateClaimedPowerParams{
+		//		RawByteDelta:         expectRawPower,
+		//		QualityAdjustedDelta: expectQAPower,
+		//	}
+		//	rt.ExpectSend(builtin.StoragePowerActorAddr, builtin.MethodsPower.UpdateClaimedPower, &pcParams, big.Zero(), nil, exitcode.Ok)
+		//}
 		if !expectPledge.IsZero() {
 			rt.ExpectSend(builtin.StoragePowerActorAddr, builtin.MethodsPower.UpdatePledgeTotal, &expectPledge, big.Zero(), nil, exitcode.Ok)
 		}
@@ -3025,12 +3025,46 @@ func advanceAndSubmitPoSts(rt *mock.Runtime, h *actorHarness, sectors ...*miner.
 	for len(deadlines) > 0 {
 		dlSectors, ok := deadlines[dlinfo.Index]
 		if ok {
-			partitions := []miner.PoStPartition{}
+			sectorNos := bitfield.New()
 			for _, sector := range dlSectors {
-				_, pIdx, err := st.FindSector(rt.AdtStore(), sector.SectorNumber)
-				require.NoError(h.t, err)
-				partitions = append(partitions, miner.PoStPartition{Index: pIdx, Skipped: bitfield.New()})
+				sectorNos.Set(uint64(sector.SectorNumber))
 			}
+
+			dlArr, err := st.LoadDeadlines(rt.AdtStore())
+			require.NoError(h.t, err)
+			dl, err := dlArr.LoadDeadline(rt.AdtStore(), dlinfo.Index)
+			require.NoError(h.t, err)
+			parts, err := dl.PartitionsArray(rt.AdtStore())
+			require.NoError(h.t, err)
+
+			var partition miner.Partition
+			partitions := []miner.PoStPartition{}
+			require.NoError(h.t, parts.ForEach(&partition, func(partIdx int64) error {
+				live, err := partition.LiveSectors()
+				require.NoError(h.t, err)
+				toProve, err := bitfield.IntersectBitField(live, sectorNos)
+				require.NoError(h.t, err)
+				noProven, err := toProve.IsEmpty()
+				require.NoError(h.t, err)
+				if noProven {
+					// not proving anything in this partition.
+					return nil
+				}
+
+				toSkip, err := bitfield.SubtractBitField(live, toProve)
+				require.NoError(h.t, err)
+
+				notRecovering, err := bitfield.SubtractBitField(partition.Faults, partition.Recoveries)
+				require.NoError(h.t, err)
+
+				// Don't double-count skips.
+				toSkip, err = bitfield.SubtractBitField(toSkip, notRecovering)
+				require.NoError(h.t, err)
+
+				partitions = append(partitions, miner.PoStPartition{Index: uint64(partIdx), Skipped: toSkip})
+				return nil
+			}))
+
 			h.submitWindowPoSt(rt, dlinfo, partitions, dlSectors, nil)
 			delete(deadlines, dlinfo.Index)
 		}

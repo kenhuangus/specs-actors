@@ -634,6 +634,7 @@ type expectedDeadlineState struct {
 	faults       bitfield.BitField
 	recovering   bitfield.BitField
 	terminations bitfield.BitField
+	unproven     bitfield.BitField
 	posts        bitfield.BitField
 
 	partitionSectors []bitfield.BitField
@@ -664,6 +665,12 @@ func (s expectedDeadlineState) withTerminations(terminations ...uint64) expected
 }
 
 //nolint:unused
+func (s expectedDeadlineState) withUnproven(unproven ...uint64) expectedDeadlineState {
+	s.unproven = bf(unproven...)
+	return s
+}
+
+//nolint:unused
 func (s expectedDeadlineState) withPosts(posts ...uint64) expectedDeadlineState {
 	s.posts = bf(posts...)
 	return s
@@ -677,13 +684,14 @@ func (s expectedDeadlineState) withPartitions(partitions ...bitfield.BitField) e
 
 // Assert that the deadline's state matches the expected state.
 func (s expectedDeadlineState) assert(t *testing.T, store adt.Store, dl *miner.Deadline) {
-	_, faults, recoveries, terminations, partitions := checkDeadlineInvariants(
+	_, faults, recoveries, terminations, unproven, partitions := checkDeadlineInvariants(
 		t, store, dl, s.quant, s.sectorSize, s.partitionSize, s.sectors,
 	)
 
 	assertBitfieldsEqual(t, s.faults, faults)
 	assertBitfieldsEqual(t, s.recovering, recoveries)
 	assertBitfieldsEqual(t, s.terminations, terminations)
+	assertBitfieldsEqual(t, s.unproven, unproven)
 	assertBitfieldsEqual(t, s.posts, dl.PostSubmissions)
 
 	require.Equal(t, len(s.partitionSectors), len(partitions), "unexpected number of partitions")
@@ -704,6 +712,7 @@ func checkDeadlineInvariants(
 	allFaults bitfield.BitField,
 	allRecoveries bitfield.BitField,
 	allTerminations bitfield.BitField,
+	allUnproven bitfield.BitField,
 	partitionSectors []bitfield.BitField,
 ) {
 	partitions, err := dl.PartitionsArray(store)
@@ -716,6 +725,7 @@ func checkDeadlineInvariants(
 	allFaults = bitfield.NewFromSet(nil)
 	allRecoveries = bitfield.NewFromSet(nil)
 	allTerminations = bitfield.NewFromSet(nil)
+	allUnproven = bitfield.NewFromSet(nil)
 	allFaultyPower := miner.NewPowerPairZero()
 
 	expectPartIndex := int64(0)
@@ -741,6 +751,9 @@ func checkDeadlineInvariants(
 		require.NoError(t, err)
 
 		allTerminations, err = bitfield.MergeBitFields(allTerminations, partition.Terminated)
+		require.NoError(t, err)
+
+		allUnproven, err = bitfield.MergeBitFields(allUnproven, partition.Unproven)
 		require.NoError(t, err)
 
 		allFaultyPower = allFaultyPower.Add(partition.FaultyPower)
