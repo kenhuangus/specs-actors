@@ -696,7 +696,7 @@ func (dl *Deadline) DeclareFaults(
 		if err != nil {
 			return xerrors.Errorf("failed to declare faults in partition %d: %w", partIdx, err)
 		}
-		dl.FaultyPower = dl.FaultyPower.Sub(partitionNewFaultyPower)
+		dl.FaultyPower = dl.FaultyPower.Add(partitionNewFaultyPower)
 		powerDelta = powerDelta.Add(partitionPowerDelta)
 		if empty, err := newFaults.IsEmpty(); err != nil {
 			return xerrors.Errorf("failed to count new faults: %w", err)
