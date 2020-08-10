@@ -247,6 +247,14 @@ func (rt *Runtime) ResolveAddress(address addr.Address) (ret addr.Address, ok bo
 	return resolved, ok
 }
 
+func (rt *Runtime) GetIdAddr(address addr.Address) (addr.Address, bool) {
+	if address.Protocol() == addr.ID {
+		return address, true
+	}
+	resolved, ok := rt.idAddresses[address]
+	return resolved, ok
+}
+
 func (rt *Runtime) GetActorCodeCID(addr addr.Address) (ret cid.Cid, ok bool) {
 	rt.requireInCall()
 	ret, ok = rt.actorCodeCIDs[addr]
