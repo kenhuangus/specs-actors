@@ -241,6 +241,7 @@ func (p *Partition) DeclareFaults(
 
 	// Add new faults to state.
 	newFaultyPower = NewPowerPairZero()
+	powerDelta = NewPowerPairZero()
 	if newFaultSectors, err := sectors.Load(newFaults); err != nil {
 		return bitfield.BitField{}, NewPowerPairZero(), NewPowerPairZero(), xerrors.Errorf("failed to load fault sectors: %w", err)
 	} else if len(newFaultSectors) > 0 {
@@ -303,6 +304,14 @@ func (p *Partition) RecoverFaults(store adt.Store, sectors Sectors, ssize abi.Se
 	p.RecoveringPower = p.RecoveringPower.Sub(power)
 
 	return power, err
+}
+
+// Activates unproven sectors, returning the activated power.
+func (p *Partition) ActivateUnproven() PowerPair {
+	newPower := p.UnprovenPower
+	p.UnprovenPower = NewPowerPairZero()
+	p.Unproven = bitfield.New()
+	return newPower
 }
 
 // Declares sectors as recovering. Non-faulty and already recovering sectors will be skipped.

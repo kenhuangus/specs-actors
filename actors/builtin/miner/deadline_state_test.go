@@ -54,11 +54,25 @@ func TestDeadlines(t *testing.T) {
 	// Partition 2: sectors 5, 6, 7, 8
 	// Partition 3: sectors 9
 	addSectors := func(t *testing.T, store adt.Store, dl *miner.Deadline) {
-		power, err := dl.AddSectors(store, partitionSize, false, sectors, sectorSize, quantSpec)
+		activatedPower, err := dl.AddSectors(store, partitionSize, false, sectors, sectorSize, quantSpec)
+		require.NoError(t, err)
+		assert.True(t, activatedPower.IsZero())
+
+		sectorArr := sectorsArr(t, store, sectors)
+
+		// Prove everything
+		// TODO: test unproven power
+		result, err := dl.RecordProvenSectors(store, sectorArr, sectorSize, quantSpec, 0, []miner.PoStPartition{{Index: 0}, {Index: 1}, {Index: 2}})
 		require.NoError(t, err)
 
-		expectedPower := miner.PowerForSectors(sectorSize, sectors)
-		assert.True(t, expectedPower.Equals(power))
+		unprovenPower := miner.PowerForSectors(sectorSize, sectors)
+		require.True(t, result.PowerDelta.Equals(unprovenPower))
+
+		faultyPower, recoveryPower, err := dl.ProcessDeadlineEnd(store, quantSpec, 0)
+		require.NoError(t, err)
+		require.True(t, faultyPower.IsZero())
+		require.True(t, recoveryPower.IsZero())
+
 		dlState.withPartitions(
 			bf(1, 2, 3, 4),
 			bf(5, 6, 7, 8),
@@ -138,7 +152,7 @@ func TestDeadlines(t *testing.T) {
 		addSectors(t, store, dl)
 
 		// Mark faulty.
-		faultyPower, err := dl.DeclareFaults(
+		powerDelta, err := dl.DeclareFaults(
 			store, sectorsArr(t, store, sectors), sectorSize, quantSpec, 9,
 			map[uint64]bitfield.BitField{
 				0: bf(1),
@@ -148,7 +162,7 @@ func TestDeadlines(t *testing.T) {
 		require.NoError(t, err)
 
 		expectedPower := sectorPower(t, 1, 5, 6)
-		assert.True(t, faultyPower.Equals(expectedPower))
+		assert.True(t, powerDelta.Equals(expectedPower.Neg()))
 
 		dlState.withFaults(1, 5, 6).
 			withPartitions(
@@ -503,13 +517,13 @@ func TestDeadlines(t *testing.T) {
 		}))
 
 		// Retract recovery for sector 1.
-		faultyPower, err := dl.DeclareFaults(store, sectorArr, sectorSize, quantSpec, 13, map[uint64]bitfield.BitField{
+		powerDelta, err := dl.DeclareFaults(store, sectorArr, sectorSize, quantSpec, 13, map[uint64]bitfield.BitField{
 			0: bf(1),
 		})
 
 		// We're just retracting a recovery, this doesn't count as a new fault.
 		require.NoError(t, err)
-		require.True(t, faultyPower.Equals(miner.NewPowerPairZero()))
+		require.True(t, powerDelta.Equals(miner.NewPowerPairZero()))
 
 		// We're now recovering 6.
 		dlState.withRecovering(6).

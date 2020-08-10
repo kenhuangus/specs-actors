@@ -934,6 +934,9 @@ func (dl *Deadline) RecordProvenSectors(
 			return nil, xerrors.Errorf("failed to recover faulty sectors for partition %d: %w", post.Index, err)
 		}
 
+		// Finally, activate power for newly proven sectors.
+		newPowerDelta = newPowerDelta.Add(partition.ActivateUnproven())
+
 		// This will be rolled back if the method aborts with a failed proof.
 		err = partitions.Set(post.Index, &partition)
 		if err != nil {
@@ -982,6 +985,7 @@ func (dl *Deadline) RecordProvenSectors(
 		Sectors:                allSectorNos,
 		IgnoredSectors:         allIgnoredSectorNos,
 		PowerDelta:             powerDelta,
+		NewFaultyPower:         newFaultyPowerTotal,
 		RecoveredPower:         recoveredPowerTotal,
 		RetractedRecoveryPower: retractedRecoveryPowerTotal,
 	}, nil

@@ -651,6 +651,7 @@ func checkPartitionInvariants(t *testing.T,
 	require.NoError(t, err)
 
 	liveSectors := selectSectors(t, sectors, live)
+	unprovenSectors := selectSectors(t, sectors, partition.Unproven)
 
 	// Validate power
 	faultyPower := miner.PowerForSectors(sectorSize, selectSectors(t, sectors, partition.Faults))
@@ -659,7 +660,9 @@ func checkPartitionInvariants(t *testing.T,
 	assert.True(t, partition.RecoveringPower.Equals(recoveringPower), "recovering power was %v, expected %v", partition.RecoveringPower, recoveringPower)
 	livePower := miner.PowerForSectors(sectorSize, liveSectors)
 	assert.True(t, partition.LivePower.Equals(livePower), "live power was %v, expected %v", partition.LivePower, livePower)
-	activePower := livePower.Sub(faultyPower)
+	unprovenPower := miner.PowerForSectors(sectorSize, unprovenSectors)
+	assert.True(t, partition.UnprovenPower.Equals(unprovenPower), "unproven power was %v, expected %v", partition.UnprovenPower, unprovenPower)
+	activePower := livePower.Sub(faultyPower).Sub(unprovenPower)
 	partitionActivePower := partition.ActivePower()
 	assert.True(t, partitionActivePower.Equals(activePower), "active power was %v, expected %v", partitionActivePower, activePower)
 
@@ -670,6 +673,11 @@ func checkPartitionInvariants(t *testing.T,
 
 	// All faults are live.
 	contains, err = abi.BitFieldContainsAll(live, partition.Faults)
+	require.NoError(t, err)
+	assert.True(t, contains)
+
+	// All unproven are live
+	contains, err = abi.BitFieldContainsAll(live, partition.Unproven)
 	require.NoError(t, err)
 	assert.True(t, contains)
 
@@ -690,6 +698,11 @@ func checkPartitionInvariants(t *testing.T,
 
 	// Active contains no faults
 	contains, err = abi.BitFieldContainsAny(active, partition.Faults)
+	require.NoError(t, err)
+	assert.False(t, contains)
+
+	// Active contains no unproven
+	contains, err = abi.BitFieldContainsAny(active, partition.Unproven)
 	require.NoError(t, err)
 	assert.False(t, contains)
 
