@@ -65,12 +65,6 @@ func TestPaymentChannelActor_Constructor(t *testing.T) {
 			builtin.MultisigActorCodeID,
 			builtin.AccountActorCodeID,
 			exitcode.ErrIllegalArgument,
-		}, {"fails if addr is not ID type",
-			tutil.NewSECP256K1Addr(t, "beach blanket babylon"),
-			builtin.InitActorCodeID,
-			builtin.AccountActorCodeID,
-			builtin.AccountActorCodeID,
-			exitcode.ErrIllegalArgument,
 		},
 	}
 	for _, tc := range testCases {
@@ -86,6 +80,20 @@ func TestPaymentChannelActor_Constructor(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("fails if addr is not resolvable to ID address", func(t *testing.T) {
+		rt := mock.NewBuilder(ctx, paychAddr).
+			WithCaller(callerAddr, builtin.InitActorCodeID).Build(t)
+
+		nonIdAddr := tutil.NewBLSAddr(t, 501)
+
+		rt.ExpectSend(nonIdAddr, builtin.MethodSend, nil, abi.NewTokenAmount(0), nil, exitcode.Ok)
+		rt.ExpectValidateCallerType(builtin.InitActorCodeID)
+		rt.ExpectAbort(exitcode.ErrIllegalArgument, func() {
+			rt.Call(actor.Constructor, &ConstructorParams{To: nonIdAddr})
+		})
+		rt.Verify()
+	})
 
 	t.Run("fails if actor does not exist with: no code for address", func(t *testing.T) {
 		builder := mock.NewBuilder(ctx, paychAddr).
