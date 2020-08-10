@@ -654,7 +654,6 @@ func (a Actor) ConfirmSectorProofsValid(rt Runtime, params *builtin.ConfirmSecto
 				uint64(precommit.Info.ReplaceSectorNumber),
 			)
 			builtin.RequireNoErr(rt, err, exitcode.ErrIllegalArgument, "failed to record sectors for replacement")
-
 		}
 	}
 
@@ -695,6 +694,9 @@ func (a Actor) ConfirmSectorProofsValid(rt Runtime, params *builtin.ConfirmSecto
 
 			totalPrecommitDeposit = big.Add(totalPrecommitDeposit, precommit.PreCommitDeposit)
 			totalPledge = big.Add(totalPledge, initialPledge)
+
+			replacedAge, replacedDayReward := replacedSectorParameters(precommit, st, rt)
+
 			newSectorInfo := SectorOnChainInfo{
 				SectorNumber:          precommit.Info.SectorNumber,
 				SealProof:             precommit.Info.SealProof,
@@ -707,6 +709,8 @@ func (a Actor) ConfirmSectorProofsValid(rt Runtime, params *builtin.ConfirmSecto
 				InitialPledge:         initialPledge,
 				ExpectedDayReward:     dayReward,
 				ExpectedStoragePledge: storagePledge,
+				ReplacedSectorAge:     replacedAge,
+				ReplacedDayReward:     replacedDayReward,
 			}
 			newSectors = append(newSectors, &newSectorInfo)
 			newSectorNos = append(newSectorNos, newSectorInfo.SectorNumber)
@@ -744,6 +748,18 @@ func (a Actor) ConfirmSectorProofsValid(rt Runtime, params *builtin.ConfirmSecto
 	notifyPledgeChanged(rt, big.Sub(totalPledge, newlyVested))
 
 	return nil
+}
+
+func replacedSectorParameters(precommit *SectorPreCommitOnChainInfo, st State, rt Runtime) (abi.ChainEpoch, big.Int) {
+	if !precommit.Info.ReplaceCapacity {
+		return abi.ChainEpoch(0), big.Zero()
+	}
+	replaced, found, err := st.GetSector(adt.AsStore(rt), precommit.Info.ReplaceSectorNumber)
+	builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load sector %v", precommit.Info.ReplaceSectorNumber)
+	if !found {
+		rt.Abortf(exitcode.ErrNotFound, "no such sector %v to replace", precommit.Info.ReplaceSectorNumber)
+	}
+	return minEpoch(0, rt.CurrEpoch()-replaced.Activation), replaced.ExpectedDayReward
 }
 
 type CheckSectorProvenParams struct {
@@ -2118,7 +2134,7 @@ func terminationPenalty(sectorSize abi.SectorSize, currEpoch abi.ChainEpoch, rew
 	totalFee := big.Zero()
 	for _, s := range sectors {
 		sectorPower := QAPowerForSector(sectorSize, s)
-		fee := PledgePenaltyForTermination(s.ExpectedDayReward, s.ExpectedStoragePledge, currEpoch-s.Activation, rewardEstimate, networkQAPowerEstimate, sectorPower)
+		fee := PledgePenaltyForTermination(s.ExpectedDayReward, s.ReplacedDayReward, s.ExpectedStoragePledge, currEpoch-s.Activation, s.ReplacedSectorAge, rewardEstimate, networkQAPowerEstimate, sectorPower)
 		totalFee = big.Add(fee, totalFee)
 	}
 	return totalFee
